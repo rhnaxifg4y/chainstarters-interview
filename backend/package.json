@@ -8,5 +8,9 @@
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "graphql-ws": "^6.0.4",
+    "graphql-yoga": "^5.13.2"
   }
 }
