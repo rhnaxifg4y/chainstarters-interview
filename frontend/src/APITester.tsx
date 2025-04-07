@@ -1,39 +1,125 @@
-import React, { useRef, type FormEvent } from "react";
+import React, { useRef, useState, type FormEvent } from "react";
+import {
+  ApolloClient,
+  InMemoryCache,
+  ApolloProvider,
+  useMutation,
+  useSubscription,
+  gql,
+} from '@apollo/client';
+import { HttpLink } from '@apollo/client/link/http';
+import { split } from '@apollo/client/link/core';
+import { getMainDefinition } from '@apollo/client/utilities';
+import { GraphQLWsLink } from '@apollo/client/link/subscriptions';
+import { createClient } from 'graphql-ws';
 
-export function APITester() {
+const POST_MESSAGE = gql`
+  mutation PostMessage($content: String!, $author: String!) {
+    postMessage(content: $content, author: $author) {
+      id
+      content
+      author
+      createdAt
+    }
+  }
+`;
+
+const MESSAGE_SUBSCRIPTION = gql`
+  subscription OnMessagePosted {
+    messagePosted {
+      id
+      content
+      author
+      createdAt
+    }
+  }
+`;
+
+const httpLink = new HttpLink({
+  uri: 'http://localhost:4000/graphql',
+});
+
+const wsLink = new GraphQLWsLink(createClient({
+  url: 'ws://localhost:4000/graphql',
+}));
+
+const splitLink = split(
+  ({ query }) => {
+    const definition = getMainDefinition(query);
+    return (
+      definition.kind === 'OperationDefinition' &&
+      definition.operation === 'subscription'
+    );
+  },
+  wsLink,
+  httpLink
+);
+
+const client = new ApolloClient({
+  link: splitLink,
+  cache: new InMemoryCache(),
+});
+
+function Chatbox() {
   const responseInputRef = useRef<HTMLTextAreaElement>(null);
+  const [author] = useState('Anonymous');
+  const [messages, setMessages] = useState([]);
+
+  const [postMessage] = useMutation(POST_MESSAGE, {
+    onCompleted: (data) => {
+      console.log('Mutation completed:', data);
+    },
+    onError: (error) => {
+      console.error('Mutation error:', error);
+      responseInputRef.current!.value = `Error posting message: ${error.message}`;
+    },
+  });
+
+  const { data, error, loading } = useSubscription(MESSAGE_SUBSCRIPTION, {
+    onData: ({ data }) => {
+      console.log('Subscription data received:', data);
+      const newMessage = data.data.messagePosted;
+      setMessages((prev) => {
+        const newMessages = [...prev, newMessage];
+        responseInputRef.current!.value = newMessages
+          .map((msg) => `${msg.author} (${new Date(msg.createdAt).toLocaleTimeString()}): ${msg.content}`)
+          .join('\n');
+        return newMessages;
+      });
+    },
+    onError: (error) => {
+      console.error('Subscription error:', error);
+      responseInputRef.current!.value = `Subscription Error: ${error.message}`;
+    },
+    onComplete: () => {
+      console.log('Subscription completed');
+    },
+  });
+
+  console.log('Subscription state:', { data, error, loading });
 
   const testEndpoint = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const form = e.currentTarget;
+    const formData = new FormData(form);
+    const message = formData.get("message") as string;
 
-    try {
-      const form = e.currentTarget;
-      const formData = new FormData(form);
-      const endpoint = formData.get("endpoint") as string;
-      const url = new URL(endpoint, location.href);
-      const method = formData.get("method") as string;
-      const res = await fetch(url, { method });
-
-      const data = await res.json();
-      responseInputRef.current!.value = JSON.stringify(data, null, 2);
-    } catch (error) {
-      responseInputRef.current!.value = String(error);
+    const content = message.trim();
+    if (message) {
+      postMessage({ variables: { content, author } });
+      form.reset();
     }
   };
 
   return (
     <div className="api-tester">
       <form onSubmit={testEndpoint} className="endpoint-row">
-        <select name="method" className="method">
-          <option value="GET">GET</option>
-          <option value="PUT">PUT</option>
-        </select>
         <input
           type="text"
-          name="endpoint"
-          defaultValue="/api/hello"
+          name="message"
+          defaultValue=""
           className="url-input"
-          placeholder="/api/hello"
+          placeholder="Type your message here..."
         />
         <button type="submit" className="send-button">
           Send
@@ -42,9 +128,18 @@ export function APITester() {
       <textarea
         ref={responseInputRef}
         readOnly
-        placeholder="Response will appear here..."
+        placeholder="Messages will appear here..."
         className="response-area"
+        style={{ minHeight: '200px' }}
       />
     </div>
+  );
+}
+
+export function APITester() {
+  return (
+    <ApolloProvider client={client}>
+      <Chatbox />
+    </ApolloProvider>
   );
 }
